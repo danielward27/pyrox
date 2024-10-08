@@ -7,7 +7,7 @@ from flowjax.experimental.numpyro import sample
 from numpyro import handlers
 
 from pyronox.numpyro_utils import (
-    get_sample_site_names,
+    sample_site_names,
     trace_to_distribution_transforms,
     trace_to_log_prob,
 )
@@ -53,8 +53,8 @@ def test_trace_to_distribution_transforms():
     trace = handlers.trace(handlers.condition(model, data)).get_trace(obs=jnp.zeros(5))
     transforms = trace_to_distribution_transforms(trace)
 
-    assert pytest.approx(transforms["x"][0](jnp.zeros(5))) == jnp.zeros(5)
-    assert pytest.approx(transforms["y"][0](jnp.zeros(5))) == data["x"]
+    assert pytest.approx(transforms["x"](jnp.zeros(5))) == jnp.zeros(5)
+    assert pytest.approx(transforms["y"](jnp.zeros(5))) == data["x"]
 
     def nested_plate_model():
         with numpyro.plate("plate1", 2):
@@ -63,16 +63,16 @@ def test_trace_to_distribution_transforms():
 
     trace = handlers.trace(handlers.condition(nested_plate_model, {"x": 1})).get_trace()
     transforms = trace_to_distribution_transforms(trace)
-    assert transforms["x"][0](1) == 2
+    assert transforms["x"](1) == 2
 
 
 def test_get_sample_site_names():
-    names = get_sample_site_names(model)
+    names = sample_site_names(model)
     assert names.observed == set()
     assert names.latent == {"x", "y"}
     assert names.all == {"x", "y"}
 
-    names = get_sample_site_names(model, obs=jnp.array(0))
+    names = sample_site_names(model, obs=jnp.array(0))
     assert names.observed == {"y"}
     assert names.latent == {"x"}
     assert names.all == {"x", "y"}

@@ -1,7 +1,7 @@
 """Numpyro utility functions."""
 
+from collections import namedtuple
 from collections.abc import Callable
-from dataclasses import dataclass
 from functools import partial
 
 import jax.random as jr
@@ -9,6 +9,7 @@ from jax import eval_shape
 from jax.tree_util import Partial, tree_map
 from numpyro import distributions as ndist
 from numpyro import handlers
+from numpyro.distributions import transforms as ntransforms
 from numpyro.distributions.util import is_identically_one
 from numpyro.infer.initialization import init_to_sample
 from numpyro.ops.pytree import PytreeTrace
@@ -52,7 +53,7 @@ def shape_only_trace(model: Callable, *args, **kwargs):
     )
 
 
-def get_sample_site_names(model: Callable, *args, **kwargs):
+def sample_site_names(model: Callable, *args, **kwargs):
     """Infer the names of the sample sites of a model given args and kwargs.
 
     Args:
@@ -64,7 +65,6 @@ def get_sample_site_names(model: Callable, *args, **kwargs):
         A dataclass with ``observed``, ``latent`` and ``all`` field/property names.
     """
     trace = shape_only_trace(model, *args, **kwargs)
-
     observed, latent = set(), set()
     for name, site in trace.items():
         if site["type"] != "sample":
@@ -74,16 +74,13 @@ def get_sample_site_names(model: Callable, *args, **kwargs):
         else:
             latent.add(name)
 
-    @dataclass
-    class _Names:
-        observed: set[str]
-        latent: set[str]
+    SiteNames = namedtuple("SiteNames", ["observed", "latent", "all"])
 
-        @property
-        def all(self) -> set[str]:
-            return self.observed | self.latent
-
-    return _Names(set(observed), set(latent))
+    return SiteNames(
+        observed=set(observed),
+        latent=set(latent),
+        all=set(observed) | set(latent),
+    )
 
 
 def trace_to_distribution_transforms(trace: dict):
@@ -103,7 +100,10 @@ def trace_to_distribution_transforms(trace: dict):
                 dist = dist.base_dist
 
             if isinstance(dist, ndist.TransformedDistribution):
-                transforms[k] = dist.transforms
+                if len(dist.transforms) == 1:
+                    transforms[k] = dist.transforms[0]
+                else:
+                    transforms[k] = ntransforms.ComposeTransform(dist.transforms)
 
     return transforms
 

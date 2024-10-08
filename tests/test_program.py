@@ -4,19 +4,40 @@ import jax.numpy as jnp
 import jax.random as jr
 import numpyro
 import pytest
-from flowjax.distributions import Normal
-from flowjax.experimental.numpyro import sample
+from flowjax.bijections import Exp, Invert
+from flowjax.distributions import LogNormal, Normal
+from flowjax.experimental.numpyro import _BijectionToNumpyro, sample
+from numpyro.infer import reparam
 
-from pyronox.program import AbstractProgram, ReparameterizedProgram
+from pyronox.program import AbstractProgram, GuideToDataSpace, ReparameterizedProgram
 
 
 class Program(AbstractProgram):
 
     def __call__(self, obs=None):
+        scale = sample("scale", LogNormal())
         with numpyro.plate("plate", 5):
-            x = sample("x", Normal())
+            x = sample("x", Normal(1, scale))
         y = numpyro.deterministic("y", x + 1)
         sample("z", Normal(y), obs=obs)
+
+
+def reparameterized_program():
+    return ReparameterizedProgram(
+        Program(),
+        {
+            "x": reparam.TransformReparam(),
+            "scale": reparam.ExplicitReparam(_BijectionToNumpyro(Invert(Exp()))),
+        },
+    )
+
+
+class Guide(AbstractProgram):
+
+    def __call__(self, obs=None):
+        sample("scale_base", Normal())
+        with numpyro.plate("plate", 5):
+            sample("x_base", Normal())
 
 
 validate_data_raises_test_cases = {
@@ -57,7 +78,7 @@ def test_validate_data_does_not_raise():
 
 def test_sample():
     sample = Program().sample(key=jr.key(0))
-    assert sample.keys() == {"x", "y", "z"}
+    assert sample.keys() == {"scale", "x", "y", "z"}
 
 
 def test_log_prob():
@@ -75,7 +96,7 @@ def test_log_prob():
 def test_sample_and_log_prob():
     program = Program()
     sample, log_prob = program.sample_and_log_prob(jr.key(0))
-    assert sample.keys() == {"x", "y", "z"}
+    assert sample.keys() == {"scale", "x", "y", "z"}
 
     log_prob2 = program.log_prob(sample)
     assert pytest.approx(log_prob2) == log_prob
@@ -86,14 +107,45 @@ def test_reparameterized_program():
     # Original space sample and log prob
     sample_original, log_prob1 = Program().sample_and_log_prob(key)
 
-    program = ReparameterizedProgram(Program(), {"x"})
-    sample = program.sample(key)
-    assert "x_base" in sample
+    program = reparameterized_program()
+    base_sample = program.sample(key)
+    assert "x_base" in base_sample
+    assert "scale_base" in base_sample
 
-    sample, _ = program.sample_and_log_prob(key)
-    assert "x_base" in sample
+    base_sample_lp = program.sample_and_log_prob(key)
+    assert "x_base" in base_sample_lp[0]
+    assert "scale_base" in base_sample_lp[0]
 
-    # Map back to x space
-    sample = program.latents_to_original_space(sample)
-    assert sample_original.keys() == sample.keys()
-    assert all(pytest.approx(sample_original[k]) == sample[k] for k in sample.keys())
+    # Map back to data space
+    reconstructed = program.latents_to_original_space(base_sample)
+    assert sample_original.keys() == reconstructed.keys()
+    assert all(
+        pytest.approx(sample_original[k]) == reconstructed[k]
+        for k in reconstructed.keys()
+    )
+
+    # Test infer_reparam_inv
+    reparam_inv = program._infer_reparam_inv(base_sample)
+    assert {"scale_base", "x_base"} == reparam_inv.keys()
+
+    # Scale transform should be exp
+    base = -2
+    assert pytest.approx(jnp.exp(base)) == reparam_inv["scale_base"].transform(base)
+
+    # X transform should be affine(1, scale)
+    expected = base * sample_original["scale"] + 1
+    assert pytest.approx(expected) == reparam_inv["x_base"].transform(
+        base,
+    )
+
+
+def test_guide_to_data_space():
+
+    key = jr.key(0)
+    guide = GuideToDataSpace(Guide(), reparameterized_program())
+    sample = guide.sample(key, obs=jnp.arange(5))
+    assert "scale" in sample
+    assert "x" in sample
+
+    assert guide.log_prob(sample, obs=jnp.arange(5)).shape == ()
+    # TODO lazy test above.

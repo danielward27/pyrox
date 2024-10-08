@@ -7,16 +7,16 @@ vectorization otherwise, for example using ``equinox.filter_vmap`` or ``jax.vmap
 """
 
 from abc import abstractmethod
-from collections.abc import Iterable
 
 import equinox as eqx
 from flowjax.wrappers import unwrap
 from jaxtyping import Array, PRNGKeyArray
 from numpyro import handlers
+from numpyro.distributions import transforms as ntransforms
 from numpyro.infer import reparam
 
 from pyronox.numpyro_utils import (
-    get_sample_site_names,
+    sample_site_names,
     shape_only_trace,
     trace_to_distribution_transforms,
     trace_to_log_prob,
@@ -29,7 +29,23 @@ def _check_present(names, data):
             raise ValueError(f"Expected {site} to be provided in data.")
 
 
-class AbstractProgram(eqx.Module):
+class _DistributionLike(eqx.Module):
+    # Shared between AbstractProgram and InvReparamGuide
+
+    @abstractmethod
+    def sample(self, key: PRNGKeyArray, *args, **kwargs) -> dict[str, Array]:
+        pass
+
+    @abstractmethod
+    def log_prob(self, data: dict[str, Array], *args, **kwargs):
+        pass
+
+    @abstractmethod
+    def sample_and_log_prob(self, key: PRNGKeyArray, *args, **kwargs):
+        pass
+
+
+class AbstractProgram(_DistributionLike):
     """Abstract class representing a (numpyro) probabilistic program.
 
     Provides convenient distribution-like methods for common use cases, along with
@@ -60,7 +76,7 @@ class AbstractProgram(eqx.Module):
         """The joint probability under the model.
 
         Args:
-            data: Dictionary of samples, including all random sites in the program
+            data: Dictionary of samples, including all latent sites in the program
                 (deterministic nodes can be provided, but are not required).
             *args: Positional arguments passed to the program.
             **kwargs: Key word arguments passed to the program.
@@ -68,7 +84,7 @@ class AbstractProgram(eqx.Module):
         """"""
         self = unwrap(self)
         self.validate_data(data, *args, **kwargs)
-        _check_present(self.site_names(*args, **kwargs), data)
+        _check_present(self.site_names(*args, **kwargs).latent, data)
         sub_model = handlers.substitute(self, data)
         trace = handlers.trace(sub_model).get_trace(*args, **kwargs)
         return trace_to_log_prob(trace, reduce=True)
@@ -125,51 +141,37 @@ class AbstractProgram(eqx.Module):
                         f"{samples.shape} in data.",
                     )
 
-    def site_names(self, *args, **kwargs) -> set:
-        return get_sample_site_names(unwrap(self), *args, **kwargs).all
+    def site_names(self, *args, **kwargs):
+        """Returns a named tuple with elements, latent, observed and all."""
+        return sample_site_names(unwrap(self), *args, **kwargs)
 
 
 class ReparameterizedProgram(AbstractProgram):
     """Reparameterize the model using numpyros transform reparam.
 
+    Currenlty only supports TransformReparam and ExplicitReparam from numpyro.
+
     Args:
         program: The program to reparameterize.
-        reparam_names: The latent sites to reparameterize.
-        reparam: Whether reparameterization is applied.
+        config: The dictionary mapping the string to the reparameterization.
     """
 
     program: AbstractProgram
-    reparam_names: frozenset[str]
+    config: dict[str, reparam.TransformReparam | reparam.ExplicitReparam]
 
     def __init__(
         self,
         program: AbstractProgram,
-        reparam_names: Iterable[str],
+        config: dict[str, reparam.TransformReparam | reparam.ExplicitReparam],
     ):
         self.program = program
-        self.reparam_names = frozenset(reparam_names)
+        self.config = config
 
     def __call__(self, *args, **kwargs):
-        """Program, applying reparameterizations if ``self.reparameterized``."""
+        """Program applying reparameterizations."""
         self = unwrap(self)
-        config = {name: reparam.TransformReparam() for name in self.reparam_names}
-        with handlers.reparam(config=config):
+        with handlers.reparam(config=self.config):
             self.program(*args, **kwargs)
-
-    def get_reparam_transforms(self, latents, *args, **kwargs):
-        """Infer the deterministic transforms applied by the reparameterization.
-
-        Args:
-            latents: data from the data space (not the base space).
-            *args: Positional arguments passed to the program.
-            **kwargs: Key word arguments passed to the program.
-        """
-        model = unwrap(self).set_reparam(set_val=False)
-        self.validate_data(latents)
-        model = handlers.substitute(model, latents)
-        model_trace = handlers.trace(model).get_trace(*args, **kwargs)
-        transforms = trace_to_distribution_transforms(model_trace)
-        return {k: t for k, t in transforms.items() if k in self.reparam_names}
 
     def latents_to_original_space(
         self,
@@ -185,12 +187,90 @@ class ReparameterizedProgram(AbstractProgram):
             **kwargs: Key word arguments passed to the program.
         """
         self = unwrap(self)
+        _check_present(self.site_names(*args, **kwargs).latent, latents)
         latents = {k: v for k, v in latents.items()}  # Avoid mutating
-        self.validate_data(latents)
+        self.validate_data(latents, *args, **kwargs)
         model = handlers.condition(self, latents)
         trace = handlers.trace(model).get_trace(*args, **kwargs)
 
-        for name in self.reparam_names:
+        for name in self.config.keys():
             latents.pop(f"{name}_base")
             latents[name] = trace[name]["value"]
         return latents
+
+    def _infer_reparam_transforms(
+        self,
+        latents,
+        *args,
+        **kwargs,
+    ) -> dict[str, ntransforms.Transform]:  # TODO is this tested?
+        """Infer transforms used for reparameterizing.
+
+        Only supports ExplicitReparam and TransformReparam sites.
+
+        Args:
+            latents: data from the data space (not the base space).
+            *args: Positional arguments passed to the program.
+            **kwargs: Key word arguments passed to the program.
+        """
+        self.validate_data(latents, *args, **kwargs)
+        _check_present(self.program.site_names(*args, **kwargs).latent, latents)
+        program = handlers.substitute(self.program, latents)
+        program_trace = handlers.trace(program).get_trace(*args, **kwargs)
+        trace_transforms = trace_to_distribution_transforms(program_trace)
+
+        transforms = {}
+        for k, repar in self.config.items():
+            if isinstance(repar, reparam.TransformReparam):
+                transforms[k] = trace_transforms[k].inv
+
+            elif isinstance(repar, reparam.ExplicitReparam):
+                transforms[k] = repar.transform
+
+        return transforms
+
+
+class GuideToDataSpace(_DistributionLike):
+    """Guide in data/original space, by inverting model reparameterizations.
+
+    Often after fitting, we want to convert the guide back to the original
+    space of the program without reparameterizations. This class achieves this.
+    Make sure you pass the observations, so
+    """
+
+    guide: AbstractProgram
+    model: ReparameterizedProgram
+
+    def __init__(self, guide: AbstractProgram, model: ReparameterizedProgram):
+        self.guide = guide
+        self.model = model
+
+    def sample(self, key: PRNGKeyArray, *args, **kwargs) -> dict[str, Array]:
+        latents = self.guide.sample(key, *args, **kwargs)
+        return self.model.latents_to_original_space(latents, *args, **kwargs)
+
+    def log_prob(self, data: dict[str, Array], *args, **kwargs):
+        """Compute guide probability of latents in original space.
+
+        We achieve this by reparameterizing the guide with the inverse of the model
+        reparameterization transforms.
+        """
+        reparam_transforms = self.model._infer_reparam_transforms(data, *args, **kwargs)
+        reparam_transforms = {
+            f"{k}_base": reparam.ExplicitReparam(t.inv)
+            for k, t in reparam_transforms.items()
+        }
+        guide = ReparameterizedProgram(self.guide, reparam_transforms)
+        # Numpyro doesn't support choosing the name modification
+        # We have to match _base_base names introduced by guide reparameterization.
+        data = {
+            f"{k}_base_base" if k in self.model.config else k: v
+            for k, v in data.items()
+        }
+        return guide.log_prob(data)
+
+    def sample_and_log_prob(self, key: PRNGKeyArray, *args, **kwargs):
+        # Assuming efficiency isn't vital here.
+        sample = self.sample(key, *args, **kwargs)
+        log_prob = self.log_prob(sample, *args, **kwargs)
+        return sample, log_prob
