@@ -92,13 +92,26 @@ def test_log_prob():
     log_prob2 = model.log_prob(sample)
     assert log_prob == log_prob2
 
+    # Test passing obs same result
+    obs = sample.pop("z")
+    log_prob3 = model.log_prob(sample, obs=obs)
+    assert log_prob == log_prob3
+
 
 def test_sample_and_log_prob():
     program = Program()
-    sample, log_prob = program.sample_and_log_prob(jr.key(0))
+    key = jr.key(0)
+    sample, log_prob = program.sample_and_log_prob(key)
     assert sample.keys() == {"scale", "x", "y", "z"}
 
-    log_prob2 = program.log_prob(sample)
+    sample2 = program.sample(key)
+    log_prob2 = program.log_prob(sample2)
+
+    assert sample.keys() == sample2.keys()
+    assert all(
+        pytest.approx(v1) == v2
+        for v1, v2 in zip(sample.values(), sample2.values(), strict=True)
+    )
     assert pytest.approx(log_prob2) == log_prob
 
 

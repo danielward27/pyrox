@@ -30,18 +30,18 @@ def _check_present(names, data):
 
 
 class _DistributionLike(eqx.Module):
-    # Shared between AbstractProgram and InvReparamGuide
+    # Shared between AbstractProgram and GuideToDataSpace
 
     @abstractmethod
-    def sample(self, key: PRNGKeyArray, *args, **kwargs) -> dict[str, Array]:
+    def sample(self, key: PRNGKeyArray, **kwargs) -> dict[str, Array]:
         pass
 
     @abstractmethod
-    def log_prob(self, data: dict[str, Array], *args, **kwargs):
+    def log_prob(self, data: dict[str, Array], **kwargs):
         pass
 
     @abstractmethod
-    def sample_and_log_prob(self, key: PRNGKeyArray, *args, **kwargs):
+    def sample_and_log_prob(self, key: PRNGKeyArray, **kwargs):
         pass
 
 
@@ -53,43 +53,41 @@ class AbstractProgram(_DistributionLike):
     """
 
     @abstractmethod
-    def __call__(self, *args, **kwargs):
+    def __call__(self, **kwargs):
         pass
 
-    def sample(self, key: PRNGKeyArray, *args, **kwargs) -> dict[str, Array]:
+    def sample(self, key: PRNGKeyArray, **kwargs) -> dict[str, Array]:
         """Sample the joint distribution (including determninistic sites).
 
         Args:
             key: Jax random key.
-            *args: Positional arguments passed to the program.
             **kwargs: Key word arguments passed to the program.
         """
         seeded_model = handlers.seed(unwrap(self), key)
-        trace = handlers.trace(seeded_model).get_trace(*args, **kwargs)
+        trace = handlers.trace(seeded_model).get_trace(**kwargs)
         return {
             k: v["value"]
             for k, v in trace.items()
             if v["type"] in ("sample", "deterministic")
         }
 
-    def log_prob(self, data: dict[str, Array], *args, **kwargs):
+    def log_prob(self, data: dict[str, Array], **kwargs):
         """The joint probability under the model.
 
         Args:
             data: Dictionary of samples, including all latent sites in the program
                 (deterministic nodes can be provided, but are not required).
-            *args: Positional arguments passed to the program.
             **kwargs: Key word arguments passed to the program.
         """
         """"""
         self = unwrap(self)
-        self.validate_data(data, *args, **kwargs)
-        _check_present(self.site_names(*args, **kwargs).latent, data)
+        self.validate_data(data, **kwargs)
+        _check_present(self.site_names(**kwargs).latent, data)
         sub_model = handlers.substitute(self, data)
-        trace = handlers.trace(sub_model).get_trace(*args, **kwargs)
+        trace = handlers.trace(sub_model).get_trace(**kwargs)
         return trace_to_log_prob(trace, reduce=True)
 
-    def sample_and_log_prob(self, key: PRNGKeyArray, *args, **kwargs):
+    def sample_and_log_prob(self, key: PRNGKeyArray, **kwargs):
         """Sample and return its log probability.
 
         In some instances, this will be more efficient than calling each methods
@@ -97,11 +95,10 @@ class AbstractProgram(_DistributionLike):
 
         Args:
             key: Jax random key.
-            *args: Positional arguments passed to the program.
             **kwargs: Key word arguments passed to the program.
         """
         self = unwrap(self)
-        trace = handlers.trace(fn=handlers.seed(self, key)).get_trace(*args, **kwargs)
+        trace = handlers.trace(fn=handlers.seed(self, key)).get_trace(**kwargs)
         samples = {
             k: v["value"]
             for k, v in trace.items()
@@ -112,23 +109,21 @@ class AbstractProgram(_DistributionLike):
     def validate_data(
         self,
         data: dict[str, Array],
-        *args,
         **kwargs,
     ):
         """Validate the data names and shapes are compatible with the model.
 
         Any subset of data and deterministic sites can be provided for checking.
         Specifically, this validates that the shapes match what is produced by the
-        model when ran with *args and **kwargs. Note, if you have batch dimensions in
+        model when ran with **kwargs. Note, if you have batch dimensions in
         data, this function must be vectorized, e.g. using eqx.filter_vmap.
 
         Args:
             data: The data.
             model: The model.
-            *args: Args passed to model when tracing to infer shapes.
             **kwargs: kwargs passed to model when tracing to infer shapes.
         """
-        trace = shape_only_trace(self, *args, **kwargs)
+        trace = shape_only_trace(self, **kwargs)
         for name, samples in data.items():
             if name not in trace:
                 raise ValueError(f"Got {name} which does not exist in trace.")
@@ -141,9 +136,9 @@ class AbstractProgram(_DistributionLike):
                         f"{samples.shape} in data.",
                     )
 
-    def site_names(self, *args, **kwargs):
+    def site_names(self, **kwargs):
         """Returns a named tuple with elements, latent, observed and all."""
-        return sample_site_names(unwrap(self), *args, **kwargs)
+        return sample_site_names(unwrap(self), **kwargs)
 
 
 class ReparameterizedProgram(AbstractProgram):
@@ -167,31 +162,29 @@ class ReparameterizedProgram(AbstractProgram):
         self.program = program
         self.config = config
 
-    def __call__(self, *args, **kwargs):
+    def __call__(self, **kwargs):
         """Program applying reparameterizations."""
         self = unwrap(self)
         with handlers.reparam(config=self.config):
-            self.program(*args, **kwargs)
+            self.program(**kwargs)
 
     def latents_to_original_space(
         self,
         latents: dict[str, Array],
-        *args,
         **kwargs,
     ) -> dict[str, Array]:
         """Convert latents from the reparameterized space to original space.
 
         Args:
             latents: The set of latents from the reparameterized space.
-            *args: Positional arguments passed to the program.
             **kwargs: Key word arguments passed to the program.
         """
         self = unwrap(self)
-        _check_present(self.site_names(*args, **kwargs).latent, latents)
+        _check_present(self.site_names(**kwargs).latent, latents)
         latents = {k: v for k, v in latents.items()}  # Avoid mutating
-        self.validate_data(latents, *args, **kwargs)
+        self.validate_data(latents, **kwargs)
         model = handlers.condition(self, latents)
-        trace = handlers.trace(model).get_trace(*args, **kwargs)
+        trace = handlers.trace(model).get_trace(**kwargs)
 
         for name in self.config.keys():
             latents.pop(f"{name}_base")
@@ -201,7 +194,6 @@ class ReparameterizedProgram(AbstractProgram):
     def _infer_reparam_transforms(
         self,
         latents,
-        *args,
         **kwargs,
     ) -> dict[str, ntransforms.Transform]:  # TODO is this tested?
         """Infer transforms used for reparameterizing.
@@ -210,13 +202,12 @@ class ReparameterizedProgram(AbstractProgram):
 
         Args:
             latents: data from the data space (not the base space).
-            *args: Positional arguments passed to the program.
             **kwargs: Key word arguments passed to the program.
         """
-        self.validate_data(latents, *args, **kwargs)
-        _check_present(self.program.site_names(*args, **kwargs).latent, latents)
+        self.validate_data(latents, **kwargs)
+        _check_present(self.program.site_names(**kwargs).latent, latents)
         program = handlers.substitute(self.program, latents)
-        program_trace = handlers.trace(program).get_trace(*args, **kwargs)
+        program_trace = handlers.trace(program).get_trace(**kwargs)
         trace_transforms = trace_to_distribution_transforms(program_trace)
 
         transforms = {}
@@ -245,17 +236,17 @@ class GuideToDataSpace(_DistributionLike):
         self.guide = guide
         self.model = model
 
-    def sample(self, key: PRNGKeyArray, *args, **kwargs) -> dict[str, Array]:
-        latents = self.guide.sample(key, *args, **kwargs)
-        return self.model.latents_to_original_space(latents, *args, **kwargs)
+    def sample(self, key: PRNGKeyArray, **kwargs) -> dict[str, Array]:
+        latents = self.guide.sample(key, **kwargs)
+        return self.model.latents_to_original_space(latents, **kwargs)
 
-    def log_prob(self, data: dict[str, Array], *args, **kwargs):
+    def log_prob(self, data: dict[str, Array], **kwargs):
         """Compute guide probability of latents in original space.
 
         We achieve this by reparameterizing the guide with the inverse of the model
         reparameterization transforms.
         """
-        reparam_transforms = self.model._infer_reparam_transforms(data, *args, **kwargs)
+        reparam_transforms = self.model._infer_reparam_transforms(data, **kwargs)
         reparam_transforms = {
             f"{k}_base": reparam.ExplicitReparam(t.inv)
             for k, t in reparam_transforms.items()
@@ -269,8 +260,8 @@ class GuideToDataSpace(_DistributionLike):
         }
         return guide.log_prob(data)
 
-    def sample_and_log_prob(self, key: PRNGKeyArray, *args, **kwargs):
+    def sample_and_log_prob(self, key: PRNGKeyArray, **kwargs):
         # Assuming efficiency isn't vital here.
-        sample = self.sample(key, *args, **kwargs)
-        log_prob = self.log_prob(sample, *args, **kwargs)
+        sample = self.sample(key, **kwargs)
+        log_prob = self.log_prob(sample, **kwargs)
         return sample, log_prob
