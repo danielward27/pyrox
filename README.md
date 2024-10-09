@@ -1,4 +1,9 @@
-# Pyronox
+# pyrox
 
-Equinox + flowjax interface for numpyro, with some utilities for simplifying 
-reparameterizations. This package is in an experimental state.
+Provides a more pytorch-like interface for numpyro, using
+[equinox](https://github.com/patrick-kidger/equinox) and
+[flowjax](https://github.com/danielward27/flowjax).
+
+- Includes distribution-like methods for probabilistic programs (``log_prob``,
+``sample``, etc.).
+- Simplifies reparameterization handling for variantional inference.

@@ -20,10 +20,10 @@ import jax.random as jr
 from flowjax.wrappers import unwrap
 from jax import nn
 from jax.lax import stop_gradient
-from jaxtyping import Array, Float, PRNGKeyArray, Scalar
+from jaxtyping import Float, PRNGKeyArray, Scalar
 from optax.losses import softmax_cross_entropy
 
-from pyronox.program import AbstractProgram
+from pyrox.program import AbstractProgram
 
 
 class AbstractLoss(eqx.Module):
@@ -76,7 +76,7 @@ class EvidenceLowerBoundLoss(AbstractLoss):
 
 
 class SoftContrastiveEstimationLoss(AbstractLoss):
-    """The pyronox loss function.
+    """The pyrox loss function.
 
     Note that by default this does not train model parameters, only the variational
     parameters (see elbo_model).

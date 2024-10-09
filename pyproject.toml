@@ -9,7 +9,7 @@ dependencies = [
     "diffrax",
 ]
 description = "Equinox and numpyro interface."
-name = "pyronox"
+name = "pyrox"
 readme = "README.md"
 requires-python = ">=3.10"
 version = "0.0.0"
@@ -20,7 +20,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
-addopts = "--jaxtyping-packages=pyronox,beartype.beartype(conf=beartype.BeartypeConf(strategy=beartype.BeartypeStrategy.On))"
+addopts = "--jaxtyping-packages=pyrox,beartype.beartype(conf=beartype.BeartypeConf(strategy=beartype.BeartypeStrategy.On))"
 
 
 [tool.ruff]
@@ -39,4 +39,4 @@ convention = "google"
 "__init__.py" = ["D"]
 
 [tool.setuptools]
-packages = ["pyronox"]
+packages = ["pyrox"]

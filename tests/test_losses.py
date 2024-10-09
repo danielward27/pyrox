@@ -7,8 +7,8 @@ import pytest
 from flowjax.distributions import AbstractDistribution, Normal
 from flowjax.experimental.numpyro import sample
 
-from pyronox import losses
-from pyronox.program import AbstractProgram
+from pyrox import losses
+from pyrox.program import AbstractProgram
 
 
 class Model(AbstractProgram):
@@ -57,7 +57,7 @@ def test_losses_run(loss):
 
 
 test_cases = {
-    "pyronox-proposal": (
+    "pyrox-proposal": (
         losses.SoftContrastiveEstimationLoss(
             n_particles=2,
             alpha=0.75,
@@ -65,7 +65,7 @@ test_cases = {
         ),
         True,
     ),
-    "pyronox-posterior": (
+    "pyrox-posterior": (
         losses.SoftContrastiveEstimationLoss(
             n_particles=2,
             alpha=0.75,

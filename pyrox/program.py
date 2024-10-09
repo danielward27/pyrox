@@ -15,7 +15,7 @@ from numpyro import handlers
 from numpyro.distributions import transforms as ntransforms
 from numpyro.infer import reparam
 
-from pyronox.numpyro_utils import (
+from pyrox.numpyro_utils import (
     sample_site_names,
     shape_only_trace,
     trace_to_distribution_transforms,

@@ -9,7 +9,7 @@ from flowjax.distributions import LogNormal, Normal
 from flowjax.experimental.numpyro import _BijectionToNumpyro, sample
 from numpyro.infer import reparam
 
-from pyronox.program import AbstractProgram, GuideToDataSpace, ReparameterizedProgram
+from pyrox.program import AbstractProgram, GuideToDataSpace, ReparameterizedProgram
 
 
 class Program(AbstractProgram):
