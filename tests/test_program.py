@@ -14,7 +14,7 @@ from pyrox.program import AbstractProgram, GuideToDataSpace, ReparameterizedProg
 
 class Program(AbstractProgram):
 
-    def __call__(self, obs=None):
+    def __call__(self, *, obs=None):
         scale = sample("scale", LogNormal())
         with numpyro.plate("plate", 5):
             x = sample("x", Normal(1, scale))
@@ -73,7 +73,7 @@ def test_validate_data_does_not_raise():
     assert program.validate_data(data) is None
 
     # Subset of data
-    program.validate_data({"y": jnp.ones(5)}, data)
+    program.validate_data({"y": jnp.ones(5)})
 
 
 def test_sample():
@@ -137,19 +137,15 @@ def test_reparameterized_program():
         for k in reconstructed.keys()
     )
 
-    # Test infer_reparam_inv
-    reparam_inv = program._infer_reparam_inv(base_sample)
-    assert {"scale_base", "x_base"} == reparam_inv.keys()
+    # Test _infer_reparam_transforms
+    reparam = program._infer_reparam_transforms(base_sample)
+    assert {"scale", "x"} == reparam.keys()
 
-    # Scale transform should be exp
-    base = -2
-    assert pytest.approx(jnp.exp(base)) == reparam_inv["scale_base"].transform(base)
+    x = 2
+    assert pytest.approx(jnp.log(x)) == reparam["scale"](x)
 
-    # X transform should be affine(1, scale)
-    expected = base * sample_original["scale"] + 1
-    assert pytest.approx(expected) == reparam_inv["x_base"].transform(
-        base,
-    )
+    expected = (x - 1) / sample_original["scale"]
+    assert pytest.approx(expected) == reparam["x"](x)
 
 
 def test_guide_to_data_space():
@@ -162,3 +158,19 @@ def test_guide_to_data_space():
 
     assert guide.log_prob(sample, obs=jnp.arange(5)).shape == ()
     # TODO lazy test above.
+
+
+def test_prior():
+    model = Program()
+    prior = model.get_prior(observed_sites=["z"])
+    samp = prior.sample(jr.key(0))
+    log_prob = prior.log_prob(samp)
+
+    expected = sum(
+        [
+            LogNormal().log_prob(samp["scale"]).sum(),
+            Normal(1, samp["scale"]).log_prob(samp["x"]).sum(),
+        ],
+    )
+
+    assert pytest.approx(expected) == log_prob

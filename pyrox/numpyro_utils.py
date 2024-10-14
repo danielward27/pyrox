@@ -1,7 +1,7 @@
 """Numpyro utility functions."""
 
 from collections import namedtuple
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from functools import partial
 
 import jax.random as jr
@@ -12,10 +12,11 @@ from numpyro import handlers
 from numpyro.distributions import transforms as ntransforms
 from numpyro.distributions.util import is_identically_one
 from numpyro.infer.initialization import init_to_sample
+from numpyro.infer.inspect import get_model_relations
 from numpyro.ops.pytree import PytreeTrace
 
 
-def shape_only_trace(model: Callable, *args, **kwargs):
+def shape_only_trace(model: Callable, **kwargs):
     """Trace the numpyro model using ``jax.eval_shape``, avoiding array flops.
 
     Note callables are wrapped to  are also removed from the output (not)
@@ -33,7 +34,7 @@ def shape_only_trace(model: Callable, *args, **kwargs):
             substitute_fn=init_to_sample,
         )  # Support improper uniform
         fn = handlers.seed(fn, jr.key(0))
-        trace = handlers.trace(fn).get_trace(*args, **kwargs)
+        trace = handlers.trace(fn).get_trace(**kwargs)
 
         # We wrap all callables to ensure return value are all valid jax types
         trace = tree_map(
@@ -53,18 +54,17 @@ def shape_only_trace(model: Callable, *args, **kwargs):
     )
 
 
-def sample_site_names(model: Callable, *args, **kwargs):
+def sample_site_names(model: Callable, **kwargs):
     """Infer the names of the sample sites of a model given args and kwargs.
 
     Args:
         model: Model from which to infer the latents.
-        *args: Arguments passed to model.
         **kwargs: Key word arguments passed to the model.
 
     Returns:
         A dataclass with ``observed``, ``latent`` and ``all`` field/property names.
     """
-    trace = shape_only_trace(model, *args, **kwargs)
+    trace = shape_only_trace(model, **kwargs)
     observed, latent = set(), set()
     for name, site in trace.items():
         if site["type"] != "sample":
@@ -138,3 +138,16 @@ def trace_to_log_prob(trace: dict, *, reduce: bool = True):
     if reduce:
         log_prob = sum(v.sum() for v in log_prob.values())
     return log_prob
+
+
+def _ensure_no_downstream_sites(model, sites: Iterable[str], **kwargs):
+    """Check no sites are dowmstream of the set a set of sites."""
+    relations = get_model_relations(model, model_kwargs=kwargs)["sample_sample"]
+    relations = {k: v for k, v in relations.items() if k not in sites}
+
+    for latent_name, rel in relations.items():
+        for r_site in rel:
+            if r_site in sites:
+                raise ValueError(
+                    f"Site {latent_name} can not be downstream of {r_site}.",
+                )
