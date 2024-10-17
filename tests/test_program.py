@@ -1,15 +1,21 @@
 import re
 
+import flowjax.bijections as bij
 import jax.numpy as jnp
 import jax.random as jr
 import numpyro
 import pytest
 from flowjax.bijections import Exp, Invert
-from flowjax.distributions import LogNormal, Normal
+from flowjax.distributions import LogNormal, Normal, Transformed
 from flowjax.experimental.numpyro import _BijectionToNumpyro, sample
 from numpyro.infer import reparam
 
-from pyrox.program import AbstractProgram, GuideToDataSpace, ReparameterizedProgram
+from pyrox.program import (
+    AbstractProgram,
+    GuideToDataSpace,
+    ReparameterizedProgram,
+    remove_reparam,
+)
 
 
 class Program(AbstractProgram):
@@ -33,11 +39,17 @@ def reparameterized_program():
 
 
 class Guide(AbstractProgram):
+    scale_base: Normal
+    x_base: Normal
 
-    def __call__(self, obs=None):
-        sample("scale_base", Normal())
+    def __init__(self):
+        self.scale_base = Normal()
+        self.x_base = Normal()
+
+    def __call__(self):
+        sample("scale_base", self.scale_base)
         with numpyro.plate("plate", 5):
-            sample("x_base", Normal())
+            sample("x_base", self.x_base)
 
 
 validate_data_raises_test_cases = {
@@ -151,13 +163,28 @@ def test_reparameterized_program():
 def test_guide_to_data_space():
 
     key = jr.key(0)
-    guide = GuideToDataSpace(Guide(), reparameterized_program())
-    sample = guide.sample(key, obs=jnp.arange(5))
+    guide = GuideToDataSpace(
+        guide=Guide(),
+        model=reparameterized_program(),
+        model_kwargs={"obs": jnp.arange(5)},
+    )
+    sample = guide.sample(key)
     assert "scale" in sample
     assert "x" in sample
 
-    assert guide.log_prob(sample, obs=jnp.arange(5)).shape == ()
-    # TODO lazy test above.
+    # Manually calculate expected log_prob
+    scale_dist = Transformed(
+        guide.guide.scale_base,
+        bij.Exp(),
+    )
+    x_dist = Transformed(
+        guide.guide.x_base,
+        bij.Affine(1, sample["scale"]),
+    )
+    expected = scale_dist.log_prob(sample["scale"]) + x_dist.log_prob(sample["x"]).sum()
+
+    assert guide.log_prob(sample).shape == ()
+    assert guide.log_prob(sample) == expected
 
 
 def test_prior():
@@ -174,3 +201,10 @@ def test_prior():
     )
 
     assert pytest.approx(expected) == log_prob
+
+
+def test_remove_reparam():
+    model = (1, reparameterized_program())
+    model = remove_reparam(model)
+    assert isinstance(model[1], AbstractProgram)
+    assert not isinstance(model[1], ReparameterizedProgram)

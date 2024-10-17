@@ -10,10 +10,11 @@ from abc import abstractmethod
 from collections.abc import Iterable
 
 import equinox as eqx
+import jax
 from flowjax import wrappers
 from flowjax.wrappers import unwrap
 from jax import ShapeDtypeStruct
-from jaxtyping import Array, PRNGKeyArray
+from jaxtyping import Array, PRNGKeyArray, PyTree
 from numpyro import handlers
 from numpyro.distributions import transforms as ntransforms
 from numpyro.infer import reparam
@@ -170,7 +171,7 @@ class SetKwargs(AbstractProgram):
     """
 
     program: AbstractProgram
-    kwargs: dict
+    kwargs: wrappers.NonTrainable | dict
 
     def __init__(self, program: AbstractProgram, **kwargs):
         self.program = program
@@ -285,22 +286,42 @@ class GuideToDataSpace(_DistributionLike):
 
     guide: AbstractProgram
     model: ReparameterizedProgram
+    guide_kwargs: dict
+    model_kwargs: dict
 
-    def __init__(self, guide: AbstractProgram, model: ReparameterizedProgram):
+    def __init__(
+        self,
+        *,
+        guide: AbstractProgram,
+        model: ReparameterizedProgram,
+        guide_kwargs: dict | None = None,
+        model_kwargs: dict | None = None,
+    ):
         self.guide = guide
         self.model = model
+        self.guide_kwargs = {} if guide_kwargs is None else guide_kwargs
+        self.model_kwargs = {} if model_kwargs is None else model_kwargs
 
-    def sample(self, key: PRNGKeyArray, **kwargs) -> dict[str, Array]:
-        latents = self.guide.sample(key, **kwargs)
-        return self.model.latents_to_original_space(latents, **kwargs)
+    def sample(
+        self,
+        key: PRNGKeyArray,
+    ) -> dict[str, Array]:
+        latents = self.guide.sample(key)
+        return self.model.latents_to_original_space(latents, **self.model_kwargs)
 
-    def log_prob(self, data: dict[str, Array], **kwargs):
+    def log_prob(
+        self,
+        data: dict[str, Array],
+    ):
         """Compute guide probability of latents in original space.
 
         We achieve this by reparameterizing the guide with the inverse of the model
         reparameterization transforms.
         """
-        reparam_transforms = self.model._infer_reparam_transforms(data, **kwargs)
+        reparam_transforms = self.model._infer_reparam_transforms(
+            data,
+            **self.model_kwargs,
+        )
         reparam_transforms = {
             f"{k}_base": reparam.ExplicitReparam(t.inv)
             for k, t in reparam_transforms.items()
@@ -312,10 +333,31 @@ class GuideToDataSpace(_DistributionLike):
             f"{k}_base_base" if k in self.model.config else k: v
             for k, v in data.items()
         }
-        return guide.log_prob(data)
+        return guide.log_prob(data, **self.guide_kwargs)
 
-    def sample_and_log_prob(self, key: PRNGKeyArray, **kwargs):
+    def sample_and_log_prob(
+        self,
+        key: PRNGKeyArray,
+    ):
         # Assuming efficiency isn't vital here.
-        sample = self.sample(key, **kwargs)
-        log_prob = self.log_prob(sample, **kwargs)
+        sample = self.sample(key)
+        log_prob = self.log_prob(sample)
         return sample, log_prob
+
+
+def remove_reparam(tree: PyTree):
+    """Remove reparameterizations from a pytree.
+
+    This maps over the pytree, and unwraps the ``ReparameterizedProgram``s.
+    """
+
+    def replace_fn(leaf):
+        if isinstance(leaf, ReparameterizedProgram):
+            return leaf.program
+        return leaf
+
+    return jax.tree.map(
+        replace_fn,
+        tree,
+        is_leaf=lambda leaf: isinstance(leaf, ReparameterizedProgram),
+    )
