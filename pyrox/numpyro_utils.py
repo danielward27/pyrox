@@ -151,3 +151,4 @@ def _ensure_no_downstream_sites(model, sites: Iterable[str], **kwargs):
                 raise ValueError(
                     f"Site {latent_name} can not be downstream of {r_site}.",
                 )
+

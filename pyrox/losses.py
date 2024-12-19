@@ -5,7 +5,7 @@ The general potern taken here is that the loss functions take a partitioned
 followed by the observations and a key. In general this approach supports trainable
 parameters in both the model and guide. As such, for all inexact arrays in the model
 and guide, explicitly marking them as non-trainable is required if they should be
-considered fixed, for example using using ``flowjax.wrappers.non_trainable``, or by
+considered fixed, for example using using ``paramax.wrappers.non_trainable``, or by
 accessing through a property that applies ``jax.lax.stop_gradient``.
 """
 
@@ -16,11 +16,11 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.random as jr
-from flowjax.wrappers import unwrap
 from jax import nn
 from jax.lax import stop_gradient
 from jaxtyping import Float, PRNGKeyArray, Scalar
 from optax.losses import softmax_cross_entropy
+from paramax.wrappers import unwrap
 
 from pyrox.program import AbstractProgram
 

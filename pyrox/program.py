@@ -11,13 +11,13 @@ from collections.abc import Iterable
 
 import equinox as eqx
 import jax
-from flowjax import wrappers
-from flowjax.wrappers import unwrap
 from jax import ShapeDtypeStruct
 from jaxtyping import Array, PRNGKeyArray, PyTree
 from numpyro import handlers
 from numpyro.distributions import transforms as ntransforms
 from numpyro.infer import reparam
+from paramax import wrappers
+from paramax.wrappers import unwrap
 
 from pyrox.numpyro_utils import (
     sample_site_names,
