@@ -1,12 +1,13 @@
 [project]
 authors = [{ name = "Daniel Ward", email = "danielward27@outlook.com" }]
 dependencies = [
-    "flowjax>=15.0",
+    "flowjax>=17.0",
     "equinox",
     "tqdm",
     "optax",
     "numpyro",
     "diffrax",
+    "paramax",
 ]
 description = "Equinox and numpyro interface."
 name = "pyrox"
@@ -21,7 +22,6 @@ build-backend = "setuptools.build_meta"
 [tool.pytest.ini_options]
 pythonpath = ["."]
 addopts = "--jaxtyping-packages=pyrox,beartype.beartype(conf=beartype.BeartypeConf(strategy=beartype.BeartypeStrategy.On))"
-
 
 [tool.ruff]
 include = ["*.py", "*.pyi", "**/pyproject.toml", "*.ipynb"]

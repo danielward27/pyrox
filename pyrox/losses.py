@@ -5,23 +5,22 @@ The general potern taken here is that the loss functions take a partitioned
 followed by the observations and a key. In general this approach supports trainable
 parameters in both the model and guide. As such, for all inexact arrays in the model
 and guide, explicitly marking them as non-trainable is required if they should be
-considered fixed, for example using using ``flowjax.wrappers.non_trainable``, or by
+considered fixed, for example using using ``paramax.wrappers.non_trainable``, or by
 accessing through a property that applies ``jax.lax.stop_gradient``.
 """
 
 from abc import abstractmethod
-from functools import partial
 from typing import Literal
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.random as jr
-from flowjax.wrappers import unwrap
 from jax import nn
 from jax.lax import stop_gradient
 from jaxtyping import Float, PRNGKeyArray, Scalar
 from optax.losses import softmax_cross_entropy
+from paramax.wrappers import unwrap
 
 from pyrox.program import AbstractProgram
 
@@ -35,8 +34,12 @@ class AbstractLoss(eqx.Module):
         params: tuple[AbstractProgram, AbstractProgram],
         static: tuple[AbstractProgram, AbstractProgram],
         key: PRNGKeyArray,
-        **kwargs,
     ) -> Float[Scalar, " "]:
+        """Abstract call method computing the loss.
+
+        params and static are a partitioned (see ``eqx.partition``)
+        (model, guide) tuple.
+        """
         pass
 
 
@@ -62,14 +65,15 @@ class EvidenceLowerBoundLoss(AbstractLoss):
         params: tuple[AbstractProgram, AbstractProgram],
         static: tuple[AbstractProgram, AbstractProgram],
         key: PRNGKeyArray,
-        **kwargs,
     ) -> Float[Scalar, ""]:
         model, guide = unwrap(eqx.combine(params, static))
 
         @jax.vmap
         def elbo(key):
-            latents, guide_log_prob = guide.sample_and_log_prob(key, **kwargs)
-            model_log_prob = model.log_prob(latents, **kwargs)
+            latents, guide_log_prob = guide.sample_and_log_prob(key)
+            model_log_prob = model.log_prob(
+                {k: latents[k] for k in model.site_names().latent},
+            )
             return model_log_prob - guide_log_prob
 
         return -jnp.mean(elbo(jr.split(key, self.n_particles)))
@@ -123,31 +127,40 @@ class SoftContrastiveEstimationLoss(AbstractLoss):
         params: tuple[AbstractProgram, AbstractProgram],
         static: tuple[AbstractProgram, AbstractProgram],
         key: PRNGKeyArray,
-        **kwargs,
     ) -> Float[Scalar, ""]:
         model, guide = unwrap(eqx.combine(params, static))
         stop_grad_model, proposal = unwrap(eqx.combine(stop_gradient(params), static))
 
+        # Names may be different to guide, as e.g. we may define a joint in the
+        # guide, which is then separated into the model sites.
+        model_latent_names = stop_grad_model.site_names().latent
+
         def get_log_probs(key):
 
             if self.negative_distribution == "posterior":
-                latents = proposal.sample(key, **kwargs)
-                positive_lp = stop_grad_model.log_prob(latents, **kwargs)
+                latents = proposal.sample(key)
+                positive_lp = stop_grad_model.log_prob(
+                    {k: latents[k] for k in model_latent_names},
+                )
                 negative_lp = positive_lp * self.alpha
             else:
                 assert self.negative_distribution == "proposal"
-                latents, proposal_lp = proposal.sample_and_log_prob(key, **kwargs)
-                positive_lp = stop_grad_model.log_prob(latents, **kwargs)
+                latents, proposal_lp = proposal.sample_and_log_prob(key)
+                positive_lp = stop_grad_model.log_prob(
+                    {k: latents[k] for k in model_latent_names},
+                )
                 negative_lp = proposal_lp * self.alpha
 
             log_probs = {
                 "positive": positive_lp,
                 "negative": negative_lp,
-                "guide": guide.log_prob(latents, **kwargs),
+                "guide": guide.log_prob(latents),
             }
 
             if self.elbo_optimize_model:
-                log_probs["joint"] = model.log_prob(latents, **kwargs)
+                log_probs["joint"] = model.log_prob(
+                    {k: latents[k] for k in model_latent_names},
+                )
 
             return log_probs
 
@@ -193,18 +206,22 @@ class SelfNormImportanceWeightedForwardKLLoss(AbstractLoss):
         params: tuple[AbstractProgram, AbstractProgram],
         static: tuple[AbstractProgram, AbstractProgram],
         key: PRNGKeyArray,
-        **kwargs,
     ) -> Float[Scalar, ""]:
         model, guide = unwrap(eqx.combine(params, static))
         proposal = unwrap(eqx.combine(stop_gradient(params[1]), static[1]))
 
-        samp_and_log_prob_fn = jax.vmap(partial(proposal.sample_and_log_prob, **kwargs))
-        samples, proposal_lps = samp_and_log_prob_fn(jr.split(key, self.n_particles))
+        samples, proposal_lps = jax.vmap(proposal.sample_and_log_prob)(
+            jr.split(key, self.n_particles),
+        )
 
-        joint_lps = jax.vmap(lambda latents: model.log_prob(latents, **kwargs))(samples)
+        # Names may be different to guide, as e.g. we may define a joint in the
+        # guide, which is then separated into the model sites.
+        joint_lps = jax.vmap(model.log_prob)(
+            {k: samples[k] for k in model.site_names().latent},
+        )
         log_weights = joint_lps - proposal_lps
         normalized_weights = nn.softmax(log_weights)
-        guide_lps = jax.vmap(partial(guide.log_prob, **kwargs))(samples)
+        guide_lps = jax.vmap(guide.log_prob)(samples)
         loss = jnp.sum(normalized_weights * (joint_lps - guide_lps))
         if self.low_variance:
             mean_lp = jnp.mean(guide_lps)

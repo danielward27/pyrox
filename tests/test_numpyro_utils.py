@@ -1,3 +1,5 @@
+import re
+
 import jax.numpy as jnp
 import jax.random as jr
 import numpyro
@@ -7,6 +9,7 @@ from flowjax.experimental.numpyro import sample
 from numpyro import handlers
 
 from pyrox.numpyro_utils import (
+    _ensure_no_downstream_sites,
     sample_site_names,
     trace_to_distribution_transforms,
     trace_to_log_prob,
@@ -76,3 +79,22 @@ def test_get_sample_site_names():
     assert names.observed == {"y"}
     assert names.latent == {"x"}
     assert names.all == {"x", "y"}
+
+
+test_cases = (
+    (["a"], "Site b can not be downstream of a."),
+    (["a", "b"], "Site c can not be downstream of b"),
+    (["b"], "Site c can not be downstream of b."),
+)
+
+
+@pytest.mark.parametrize(("sites", "match"), test_cases)
+def test_ensure_no_downstream_sites(sites, match):
+
+    def model_1():
+        a = numpyro.sample("a", numpyro.distributions.Normal(0, 1))
+        b = numpyro.sample("b", numpyro.distributions.Normal(a, 1), obs=1)
+        numpyro.sample("c", numpyro.distributions.Normal(b, 1))
+
+    with pytest.raises(ValueError, match=re.escape(match)):
+        _ensure_no_downstream_sites(model_1, sites)

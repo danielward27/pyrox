@@ -7,13 +7,17 @@ vectorization otherwise, for example using ``equinox.filter_vmap`` or ``jax.vmap
 """
 
 from abc import abstractmethod
+from collections.abc import Iterable
 
 import equinox as eqx
-from flowjax.wrappers import unwrap
-from jaxtyping import Array, PRNGKeyArray
+import jax
+from jax import ShapeDtypeStruct
+from jaxtyping import Array, PRNGKeyArray, PyTree
 from numpyro import handlers
 from numpyro.distributions import transforms as ntransforms
 from numpyro.infer import reparam
+from paramax import wrappers
+from paramax.wrappers import unwrap
 
 from pyrox.numpyro_utils import (
     sample_site_names,
@@ -56,15 +60,24 @@ class AbstractProgram(_DistributionLike):
     def __call__(self, **kwargs):
         pass
 
-    def sample(self, key: PRNGKeyArray, **kwargs) -> dict[str, Array]:
+    def sample(
+        self,
+        key: PRNGKeyArray,
+        condition: dict | None = None,
+        **kwargs,
+    ) -> dict[str, Array]:
         """Sample the joint distribution (including determninistic sites).
 
         Args:
             key: Jax random key.
+            condition: Any sites to fill in with handlers.condition
             **kwargs: Key word arguments passed to the program.
         """
-        seeded_model = handlers.seed(unwrap(self), key)
-        trace = handlers.trace(seeded_model).get_trace(**kwargs)
+        model = handlers.seed(unwrap(self), key)
+        if condition is not None:
+            model = handlers.condition(model, condition)
+
+        trace = handlers.trace(model).get_trace(**kwargs)
         return {
             k: v["value"]
             for k, v in trace.items()
@@ -139,6 +152,48 @@ class AbstractProgram(_DistributionLike):
     def site_names(self, **kwargs):
         """Returns a named tuple with elements, latent, observed and all."""
         return sample_site_names(unwrap(self), **kwargs)
+
+    def get_prior(self, observed_sites: Iterable[str]):
+        """Return the program representing the prior distribution.
+
+        Note this assumes that no latents are downstream of the observed sites.
+
+        Args:
+            observed_sites: The observed sites in the model.
+        """
+        return _ProgramToPrior(self, observed_sites)
+
+
+class SetKwargs(AbstractProgram):
+    """Wraps a program, setting key word arguments for the program.
+
+    We assume the key word arguments are non-trainable.
+    """
+
+    program: AbstractProgram
+    kwargs: wrappers.NonTrainable | dict
+
+    def __init__(self, program: AbstractProgram, **kwargs):
+        self.program = program
+        self.kwargs = wrappers.NonTrainable(kwargs)
+
+    def __call__(self, **kwargs):
+        return self.program(**kwargs, **wrappers.unwrap(self.kwargs))
+
+
+class _ProgramToPrior(AbstractProgram):
+    program: AbstractProgram
+    observed_sites: frozenset
+
+    def __init__(self, program: AbstractProgram, observed_sites: Iterable, **kwargs):
+        self.program = program
+        self.observed_sites = frozenset(observed_sites)
+
+    def __call__(self, **kwargs):
+        # We provide dummy data otherwise numpyro will still generate observed data.
+        dummy_data = {k: ShapeDtypeStruct((), float) for k in self.observed_sites}
+        model = handlers.condition(self.program, dummy_data)
+        return handlers.block(model, hide=self.observed_sites)(**kwargs)
 
 
 class ReparameterizedProgram(AbstractProgram):
@@ -231,22 +286,42 @@ class GuideToDataSpace(_DistributionLike):
 
     guide: AbstractProgram
     model: ReparameterizedProgram
+    guide_kwargs: dict
+    model_kwargs: dict
 
-    def __init__(self, guide: AbstractProgram, model: ReparameterizedProgram):
+    def __init__(
+        self,
+        *,
+        guide: AbstractProgram,
+        model: ReparameterizedProgram,
+        guide_kwargs: dict | None = None,
+        model_kwargs: dict | None = None,
+    ):
         self.guide = guide
         self.model = model
+        self.guide_kwargs = {} if guide_kwargs is None else guide_kwargs
+        self.model_kwargs = {} if model_kwargs is None else model_kwargs
 
-    def sample(self, key: PRNGKeyArray, **kwargs) -> dict[str, Array]:
-        latents = self.guide.sample(key, **kwargs)
-        return self.model.latents_to_original_space(latents, **kwargs)
+    def sample(
+        self,
+        key: PRNGKeyArray,
+    ) -> dict[str, Array]:
+        latents = self.guide.sample(key)
+        return self.model.latents_to_original_space(latents, **self.model_kwargs)
 
-    def log_prob(self, data: dict[str, Array], **kwargs):
+    def log_prob(
+        self,
+        data: dict[str, Array],
+    ):
         """Compute guide probability of latents in original space.
 
         We achieve this by reparameterizing the guide with the inverse of the model
         reparameterization transforms.
         """
-        reparam_transforms = self.model._infer_reparam_transforms(data, **kwargs)
+        reparam_transforms = self.model._infer_reparam_transforms(
+            data,
+            **self.model_kwargs,
+        )
         reparam_transforms = {
             f"{k}_base": reparam.ExplicitReparam(t.inv)
             for k, t in reparam_transforms.items()
@@ -258,10 +333,31 @@ class GuideToDataSpace(_DistributionLike):
             f"{k}_base_base" if k in self.model.config else k: v
             for k, v in data.items()
         }
-        return guide.log_prob(data)
+        return guide.log_prob(data, **self.guide_kwargs)
 
-    def sample_and_log_prob(self, key: PRNGKeyArray, **kwargs):
+    def sample_and_log_prob(
+        self,
+        key: PRNGKeyArray,
+    ):
         # Assuming efficiency isn't vital here.
-        sample = self.sample(key, **kwargs)
-        log_prob = self.log_prob(sample, **kwargs)
+        sample = self.sample(key)
+        log_prob = self.log_prob(sample)
         return sample, log_prob
+
+
+def remove_reparam(tree: PyTree):
+    """Remove reparameterizations from a pytree.
+
+    This maps over the pytree, and unwraps the ``ReparameterizedProgram``s.
+    """
+
+    def replace_fn(leaf):
+        if isinstance(leaf, ReparameterizedProgram):
+            return leaf.program
+        return leaf
+
+    return jax.tree.map(
+        replace_fn,
+        tree,
+        is_leaf=lambda leaf: isinstance(leaf, ReparameterizedProgram),
+    )

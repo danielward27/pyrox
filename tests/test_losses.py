@@ -3,12 +3,13 @@ import jax
 import jax.flatten_util
 import jax.numpy as jnp
 import jax.random as jr
+import numpyro
 import pytest
 from flowjax.distributions import AbstractDistribution, Normal
 from flowjax.experimental.numpyro import sample
 
 from pyrox import losses
-from pyrox.program import AbstractProgram
+from pyrox.program import AbstractProgram, SetKwargs
 
 
 class Model(AbstractProgram):
@@ -25,7 +26,18 @@ class Guide(AbstractProgram):
         sample("a", self.a_guide)
 
 
-test_cases = [
+class DerministicSiteGuide(AbstractProgram):
+    # A common pattern is to define a joint guide distribution, and
+    # to seperate it into deterministic sites for the model latents.
+    # Here we check compatibility with this pattern.
+    c_guide: Normal = Normal(jnp.ones(3))
+
+    def __call__(self, obs=None):
+        c = sample("c", self.c_guide)
+        numpyro.deterministic("a", c)
+
+
+loss_test_cases = [
     losses.EvidenceLowerBoundLoss(
         n_particles=2,
     ),
@@ -44,13 +56,16 @@ test_cases = [
     ),
 ]
 
+guide_test_cases = [Guide, DerministicSiteGuide]
 
-@pytest.mark.parametrize("loss", test_cases)
-def test_losses_run(loss):
-    model, guide = Model(), Guide()
+
+@pytest.mark.parametrize("loss", loss_test_cases)
+@pytest.mark.parametrize("guide", guide_test_cases)
+def test_losses_run(loss, guide):
+    model, guide = Model(), guide()
+    model = SetKwargs(model, obs={"b": jnp.array(jnp.arange(3))})
     loss_val = loss(
         *eqx.partition((model, guide), eqx.is_inexact_array),
-        obs={"b": jnp.array(jnp.arange(3))},
         key=jr.key(0),
     )
     assert loss_val.shape == ()
@@ -104,14 +119,15 @@ def test_grad_zero_at_optimum(loss, *, expect_zero_grad: bool):
             posterior_mean = obs["b"] / 2
             self.a_guide = Normal(jnp.full(3, posterior_mean), posterior_variance**0.5)
 
-        def __call__(self, obs):
+        def __call__(self):
             sample("a", self.a_guide)
 
-    obs = {"b": jnp.array(jnp.arange(3))}
     model = Model()
+    obs = {"b": jnp.array(jnp.arange(3))}
+    model = SetKwargs(model, obs=obs)
     guide = OptimalGuide(obs)
     params, static = eqx.partition((model, guide), eqx.is_inexact_array)
-    grad = jax.grad(loss)(params, static, obs=obs, key=jr.key(1))
+    grad = jax.grad(loss)(params, static, key=jr.key(1))
     grad = jax.flatten_util.ravel_pytree(grad)[0]
     is_zero_grad = pytest.approx(grad, abs=1e-5) == 0
     assert is_zero_grad is expect_zero_grad
