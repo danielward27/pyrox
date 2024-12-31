@@ -307,6 +307,9 @@ class GuideToDataSpace(_DistributionLike):
         key: PRNGKeyArray,
     ) -> dict[str, Array]:
         latents = self.guide.sample(key)
+        latents = {
+            k: latents[k] for k in self.model.site_names(**self.model_kwargs).latent
+        }
         return self.model.latents_to_original_space(latents, **self.model_kwargs)
 
     def log_prob(

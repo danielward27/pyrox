@@ -83,7 +83,7 @@ class SoftContrastiveEstimationLoss(AbstractLoss):
     """The pyrox loss function.
 
     Note that by default this does not train model parameters, only the variational
-    parameters (see elbo_model).
+    parameters (see elbo_optimize_model).
 
     Args:
         n_particles: The number of particles used for estimating the loss.

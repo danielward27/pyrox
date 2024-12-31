@@ -72,7 +72,7 @@ def test_losses_run(loss, guide):
 
 
 test_cases = {
-    "pyrox-proposal": (
+    "softcvi-proposal": (
         losses.SoftContrastiveEstimationLoss(
             n_particles=2,
             alpha=0.75,
@@ -80,7 +80,7 @@ test_cases = {
         ),
         True,
     ),
-    "pyrox-posterior": (
+    "softcvi-posterior": (
         losses.SoftContrastiveEstimationLoss(
             n_particles=2,
             alpha=0.75,
