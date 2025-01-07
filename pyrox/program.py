@@ -306,7 +306,7 @@ class GuideToDataSpace(_DistributionLike):
         self,
         key: PRNGKeyArray,
     ) -> dict[str, Array]:
-        latents = self.guide.sample(key)
+        latents = self.guide.sample(key, **self.guide_kwargs)
         latents = {
             k: latents[k] for k in self.model.site_names(**self.model_kwargs).latent
         }
