@@ -51,13 +51,16 @@ class EvidenceLowerBoundLoss(AbstractLoss):
     """
 
     n_particles: int
+    stick_the_landing: bool
 
     def __init__(
         self,
         *,
         n_particles: int,
+        stick_the_landing: bool = False,
     ):
         self.n_particles = n_particles
+        self.stick_the_landing = stick_the_landing
 
     @eqx.filter_jit
     def __call__(
@@ -68,11 +71,19 @@ class EvidenceLowerBoundLoss(AbstractLoss):
     ) -> Float[Scalar, ""]:
         model, guide = unwrap(eqx.combine(params, static))
 
+        if self.stick_the_landing:
+            stop_grad_guide = unwrap(eqx.combine(stop_gradient(params[1]), static[1]))
+
         @jax.vmap
         def elbo(key):
-            latents, guide_log_prob = guide.sample_and_log_prob(key)
+            if self.stick_the_landing:
+                sample = guide.sample(key)
+                guide_log_prob = stop_grad_guide.log_prob(sample)
+            else:
+                sample, guide_log_prob = guide.sample_and_log_prob(key)
+
             model_log_prob = model.log_prob(
-                {k: latents[k] for k in model.site_names().latent},
+                {k: sample[k] for k in model.site_names().latent},
             )
             return model_log_prob - guide_log_prob
 
