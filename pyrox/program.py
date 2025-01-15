@@ -41,7 +41,7 @@ class _DistributionLike(eqx.Module):
         pass
 
     @abstractmethod
-    def log_prob(self, data: dict[str, Array], **kwargs):
+    def log_prob(self, data: dict[str, Array], *, reduce: bool = True, **kwargs):
         pass
 
     @abstractmethod
@@ -84,12 +84,14 @@ class AbstractProgram(_DistributionLike):
             if v["type"] in ("sample", "deterministic")
         }
 
-    def log_prob(self, data: dict[str, Array], **kwargs):
+    def log_prob(self, data: dict[str, Array], *, reduce: bool = True, **kwargs):
         """The joint probability under the model.
 
         Args:
             data: Dictionary of samples, including all latent sites in the program
                 (deterministic nodes can be provided, but are not required).
+            reduce: Whether to reduce the log probability values to a scalar or return
+                dictionary.
             **kwargs: Key word arguments passed to the program.
         """
         """"""
@@ -98,9 +100,9 @@ class AbstractProgram(_DistributionLike):
         _check_present(self.site_names(**kwargs).latent, data)
         sub_model = handlers.substitute(self, data)
         trace = handlers.trace(sub_model).get_trace(**kwargs)
-        return trace_to_log_prob(trace, reduce=True)
+        return trace_to_log_prob(trace, reduce=reduce)
 
-    def sample_and_log_prob(self, key: PRNGKeyArray, **kwargs):
+    def sample_and_log_prob(self, key: PRNGKeyArray, *, reduce: bool = True, **kwargs):
         """Sample and return its log probability.
 
         In some instances, this will be more efficient than calling each methods
@@ -108,6 +110,8 @@ class AbstractProgram(_DistributionLike):
 
         Args:
             key: Jax random key.
+            reduce: Whether to reduce the log probability values to a scalar or return
+                dictionary.
             **kwargs: Key word arguments passed to the program.
         """
         self = unwrap(self)
@@ -117,7 +121,7 @@ class AbstractProgram(_DistributionLike):
             for k, v in trace.items()
             if v["type"] in ("sample", "deterministic")
         }
-        return samples, trace_to_log_prob(trace)
+        return samples, trace_to_log_prob(trace, reduce=reduce)
 
     def validate_data(
         self,
@@ -315,6 +319,8 @@ class GuideToDataSpace(_DistributionLike):
     def log_prob(
         self,
         data: dict[str, Array],
+        *,
+        reduce: bool = True,
     ):
         """Compute guide probability of latents in original space.
 
@@ -336,15 +342,28 @@ class GuideToDataSpace(_DistributionLike):
             f"{k}_base_base" if k in self.model.config else k: v
             for k, v in data.items()
         }
-        return guide.log_prob(data, **self.guide_kwargs)
+        log_probs = guide.log_prob(data, reduce=reduce, **self.guide_kwargs)
+        if not reduce:  # remove _base_base postfix
+            log_probs = {
+                k.split("_base_base")[0] if k.endswith("_base_base") else k: v
+                for k, v in log_probs.items()
+            }
+        return log_probs
 
     def sample_and_log_prob(
         self,
         key: PRNGKeyArray,
+        *,
+        reduce: bool = True,
     ):
         # Assuming efficiency isn't vital here.
         sample = self.sample(key)
-        log_prob = self.log_prob(sample)
+        log_prob = self.log_prob(sample, reduce=reduce)
+        if not reduce:  # remove _base_base postfix
+            log_prob = {
+                k.split("_base_base")[0] if k.endswith("_base_base") else k: v
+                for k, v in log_prob.items()
+            }
         return sample, log_prob
 
 
