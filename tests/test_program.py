@@ -186,6 +186,14 @@ def test_guide_to_data_space():
     assert guide.log_prob(sample).shape == ()
     assert guide.log_prob(sample) == expected
 
+    # Check reduce=False correctly removes postfix:
+    lp_no_reduce1 = guide.log_prob(sample, reduce=False)
+    _, lp_no_reduce2 = guide.sample_and_log_prob(key, reduce=False)
+
+    for lps in [lp_no_reduce1, lp_no_reduce2]:
+        for k in lps.keys():
+            assert not k.endswith("_base_base")
+
 
 def test_prior():
     model = Program()
